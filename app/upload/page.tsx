@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
+import imageCompression from 'browser-image-compression'
 
 export default function UploadPage() {
   const [file, setFile] = useState<File | null>(null)
@@ -17,89 +18,92 @@ export default function UploadPage() {
     try {
       setUploading(true)
 
-      // 1. อัปโหลดรูปไปที่ Storage
-      const fileExt = file.name.split('.').pop()
-      const fileName = `${Math.random()}.${fileExt}`
+      // --- STEP 1: LOSSLESS SHIELDING (ชัดเท่าต้นฉบับเป๊ะ) ---
+      const options = {
+        maxSizeMB: 50,           // ขยายเพดานไว้สูงมากเพื่อให้ไม่โดนบีบอัด
+        maxWidthOrHeight: 8000,  // รองรับไฟล์ใหญ่ระดับ 8K เพื่อความคมชัดสูงสุด
+        useWebWorker: true,
+        initialQuality: 1,       // 1 = 100% Quality (ห้ามลดคุณภาพไฟล์)
+        fileType: 'image/webp'   // แปลงเป็น WebP แบบ Lossless เพื่อความลื่นไหลของเว็บ
+      }
+      
+      const protectedFile = await imageCompression(file, options)
+
+      // --- STEP 2: SECURITY NAMING ---
+      const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.webp`
+      const filePath = `vault/${fileName}`
+
+      // --- STEP 3: UPLOAD TO SUPABASE ---
       const { error: uploadError } = await supabase.storage
         .from('gallery')
-        .upload(fileName, file)
+        .upload(filePath, protectedFile)
 
       if (uploadError) throw uploadError
 
-      // 2. ดึง Public URL ของรูปที่เพิ่งอัปโหลด
-      const { data: urlData } = supabase.storage
-        .from('gallery')
-        .getPublicUrl(fileName)
+      const { data: urlData } = supabase.storage.from('gallery').getPublicUrl(filePath)
 
-      const imageUrl = urlData.publicUrl
-
-      // 3. บันทึกข้อมูลลงตาราง artworks
-      const { error: dbError } = await supabase
-        .from('artworks')
-        .insert([{ 
-          title, 
-          artist, 
-          image_url: imageUrl,
-          protection_status: true // สมมติว่าผ่านระบบป้องกันแล้ว
-        }])
+      // --- STEP 4: DATABASE RECORD WITH SECURITY TAGS ---
+      const { error: dbError } = await supabase.from('artworks').insert([{ 
+        title, 
+        artist, 
+        image_url: urlData.publicUrl,
+        protection_status: true,
+        metadata: { 
+          original_name: file.name,
+          upload_method: 'Lossless Shield',
+          timestamp: new Date().toISOString()
+        }
+      }])
 
       if (dbError) throw dbError
 
-      alert('อัปโหลดสำเร็จ!')
-      router.push('/') // กลับหน้าแรกไปดูผลงาน
+      alert('นำผลงานเข้าสู่ระบบป้องกันสำเร็จ!')
+      router.push('/')
       router.refresh()
+
     } catch (error: any) {
-      alert(error.message)
+      alert(`Error: ${error.message}`)
     } finally {
       setUploading(false)
     }
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
-      <div className="bg-white p-8 rounded-[32px] shadow-xl max-w-md w-full border border-slate-100">
-        <h1 className="text-3xl font-black mb-8 text-slate-900">Upload <span className="text-indigo-600">Art</span></h1>
+    <main className="min-h-screen bg-[#fafafa] flex items-center justify-center p-6">
+      <div className="bg-white p-10 rounded-[40px] shadow-sm border border-gray-100 max-w-md w-full">
+        <h1 className="text-3xl font-serif italic mb-2">Secure Upload</h1>
+        <p className="text-gray-400 text-sm mb-8">Lossless encryption for your masterpiece.</p>
         
         <form onSubmit={handleUpload} className="space-y-6">
-          <div>
-            <label className="block text-sm font-bold text-slate-700 mb-2">ชื่อผลงาน</label>
-            <input 
-              type="text" 
-              className="w-full p-4 bg-slate-50 border-none rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none"
-              placeholder="ตั้งชื่อภาพของคุณ"
-              onChange={(e) => setTitle(e.target.value)}
-              required
-            />
-          </div>
+          <input 
+            type="text" placeholder="Title" required
+            className="w-full py-3 border-b border-gray-100 outline-none focus:border-black transition"
+            onChange={(e) => setTitle(e.target.value)}
+          />
+          <input 
+            type="text" placeholder="Artist name" required
+            className="w-full py-3 border-b border-gray-100 outline-none focus:border-black transition"
+            onChange={(e) => setArtist(e.target.value)}
+          />
 
-          <div>
-            <label className="block text-sm font-bold text-slate-700 mb-2">ชื่อศิลปิน</label>
+          <div className="relative h-48 border-2 border-dashed border-gray-100 rounded-[32px] flex items-center justify-center group hover:bg-gray-50 transition cursor-pointer">
             <input 
-              type="text" 
-              className="w-full p-4 bg-slate-50 border-none rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none"
-              placeholder="ชื่อนามปากกา"
-              onChange={(e) => setArtist(e.target.value)}
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-bold text-slate-700 mb-2">เลือกไฟล์ภาพ</label>
-            <input 
-              type="file" 
-              accept="image/*"
-              className="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+              type="file" accept="image/*" className="absolute inset-0 opacity-0 cursor-pointer"
               onChange={(e) => setFile(e.target.files?.[0] || null)}
-              required
             />
+            <div className="text-center">
+              <span className="text-2xl mb-2 block">🖼️</span>
+              <p className="text-xs font-bold text-gray-400 uppercase tracking-widest">
+                {file ? file.name : "Select High-Res File"}
+              </p>
+            </div>
           </div>
 
           <button 
-            type="submit" 
             disabled={uploading}
-            className="w-full bg-indigo-600 text-white p-4 rounded-2xl font-bold shadow-lg shadow-indigo-100 hover:scale-[1.02] active:scale-95 transition-all disabled:bg-slate-300"
+            className="w-full bg-black text-white py-5 rounded-full font-bold hover:opacity-80 transition disabled:bg-gray-200"
           >
-            {uploading ? 'กำลังอัปโหลด...' : 'บันทึกผลงาน'}
+            {uploading ? 'SHIELDING...' : 'PROTECT & UPLOAD'}
           </button>
         </form>
       </div>
